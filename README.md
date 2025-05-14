@@ -1,41 +1,59 @@
 # Task Manager Library
 
-Python client library for interacting with the Task Manager API.
+This library contains shared components used by the Task Manager application, including:
+
+- Data models for tasks, logs, and locks
+- Common utilities and helpers
+- Shared configurations
 
 ## Installation
 
 ```bash
-pip install git+https://github.com/kakbet/task-manager-lib.git
+pip install -e .
 ```
 
 ## Usage
 
 ```python
-from task_manager_lib import TaskManagerClient
+from task_manager_lib.models import Task, TaskCreate, TaskUpdate
 
-# Initialize client
-client = TaskManagerClient(base_url="http://localhost:8000")
+# Create a new task
+task = TaskCreate(
+    name="example_task",
+    description="An example task",
+    priority=50,
+    max_retries=3
+)
 
-# Create a task
-task = client.create_task(name="example", payload={"key": "value"})
-
-# Get task status
-status = client.get_task_status(task.id)
+# Update task
+update = TaskUpdate(
+    status="running",
+    priority=75
+)
 ```
 
-## Development
+## Models
 
-1. Clone the repository
-2. Install dependencies:
-```bash
-pip install -e .
-```
+### Task
+- `name`: Task name (required)
+- `description`: Task description
+- `parameters`: Task parameters (JSON)
+- `scheduled_time`: When to run the task
+- `priority`: Task priority (0-100, higher is more important)
+- `max_retries`: Maximum retry attempts
+- `retries`: Current retry count
+- `status`: Current task status
+- `result`: Task result (JSON)
+- `error`: Error message if failed
 
-3. Run tests:
-```bash
-pytest
-```
+### TaskLock
+- `task_id`: ID of locked task
+- `locked_by`: Worker ID that locked the task
+- `locked_at`: When the task was locked
+- `is_locked`: Current lock status
 
-## License
-
-MIT
+### TaskLog
+- `task_id`: Task ID
+- `log_level`: Log level (INFO, ERROR, etc.)
+- `message`: Log message
+- `context`: Additional context (JSON)
