@@ -1,142 +1,163 @@
-from datetime import datetime
+import httpx
 from typing import List, Optional, Dict, Any
 from uuid import UUID
-
-import requests
+from datetime import datetime
 from pydantic import BaseModel
+import asyncio
+from functools import wraps
+
+def async_method(func):
+    @wraps(func)
+    async def wrapper(self, *args, **kwargs):
+        return await func(self, *args, **kwargs)
+    return wrapper
 
 class TaskCreate(BaseModel):
     name: str
     description: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
     scheduled_time: Optional[datetime] = None
+    priority: Optional[int] = 0
+    max_retries: Optional[int] = 3
 
-class TaskLog(BaseModel):
+class Task(BaseModel):
     id: UUID
-    task_id: UUID
-    log_time: datetime
-    log_level: str
-    message: str
-    context: Optional[Dict[str, Any]] = None
-
-    class Config:
-        from_attributes = True
-
-class TaskLock(BaseModel):
-    task_id: UUID
-    locked_by: str
-    locked_at: datetime
-
-    class Config:
-        from_attributes = True
-
-class Task(TaskCreate):
-    id: UUID
-    status: str
+    name: str
+    description: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = None
+    status: str = "queued"
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
+    priority: int = 0
+    retries: int = 0
+    max_retries: int = 3
+    is_locked: bool = False
+    locked_by: Optional[str] = None
+    scheduled_time: Optional[datetime] = None
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
-    logs: List[TaskLog] = []
-    lock: Optional[TaskLock] = None
-
-    @classmethod
-    def model_validate(cls, obj):
-        if isinstance(obj, dict):
-            # Convert string dates to datetime objects
-            for field in ['created_at', 'updated_at', 'started_at', 'completed_at']:
-                if obj.get(field):
-                    obj[field] = datetime.fromisoformat(obj[field].replace('Z', '+00:00'))
-            return super().model_validate(obj)
-        return super().model_validate(obj)
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
-        json_encoders = {
-            datetime: lambda v: v.isoformat() if v else None,
-            UUID: lambda v: str(v)
-        }
+
+class TaskUpdate(BaseModel):
+    status: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
 
 class TaskManagerClient:
     def __init__(self, base_url: str, api_key: Optional[str] = None):
         self.base_url = base_url.rstrip('/')
         self.api_key = api_key
-        self.session = requests.Session()
-        if api_key:
-            self.session.headers.update({"Authorization": f"Bearer {api_key}"})
+        self.client = None
 
-    def create_task(self, task: TaskCreate) -> Task:
-        """Create a new task"""
-        response = self.session.post(
-            f"{self.base_url}/tasks/",
-            json=task.model_dump(exclude_unset=True)
-        )
-        response.raise_for_status()
-        return Task.model_validate(response.json())
+    @async_method
+    async def setup(self):
+        """Initialize the async client"""
+        if self.client is None:
+            self.client = httpx.AsyncClient(
+                base_url=self.base_url,
+                headers={"X-API-Key": self.api_key} if self.api_key else None,
+                follow_redirects=True
+            )
 
-    def get_task(self, task_id: UUID) -> Task:
-        """Get task by ID"""
-        response = self.session.get(f"{self.base_url}/tasks/{task_id}")
-        response.raise_for_status()
-        return Task.model_validate(response.json())
-
-    def list_tasks(
+    @async_method
+    async def list_tasks(
         self,
         status: Optional[str] = None,
-        skip: int = 0,
-        limit: int = 100
+        limit: Optional[int] = None,
+        offset: Optional[int] = None
     ) -> List[Task]:
-        """List tasks with optional filtering"""
-        params = {"skip": skip, "limit": limit}
-        if status:
-            params["status"] = status
-        
-        response = self.session.get(f"{self.base_url}/tasks/", params=params)
-        response.raise_for_status()
-        return [Task.model_validate(t) for t in response.json()]
+        """List tasks with optional filters"""
+        try:
+            params = {}
+            if status:
+                params["status"] = status
+            if limit is not None:
+                params["limit"] = limit
+            if offset is not None:
+                params["skip"] = offset
 
-    def update_task(self, task_id: UUID, task_data: Dict[str, Any]) -> Task:
+            response = await self.client.get("/tasks/", params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if not data:
+                return []
+            if isinstance(data, dict):
+                return [Task.model_validate(data)]
+            return [Task.model_validate(item) for item in data]
+        except Exception as e:
+            print(f"Error in list_tasks: {e}")
+            raise
+
+    @async_method
+    async def get_task(self, task_id: UUID) -> Task:
+        """Get a specific task by ID"""
+        try:
+            response = await self.client.get(f"/tasks/{task_id}/")
+            response.raise_for_status()
+            return Task.model_validate(response.json())
+        except Exception as e:
+            print(f"Error in get_task: {e}")
+            raise
+
+    @async_method
+    async def create_task(self, task: TaskCreate) -> Task:
+        """Create a new task"""
+        try:
+            response = await self.client.post("/tasks/", json=task.model_dump())
+            response.raise_for_status()
+            return Task.model_validate(response.json())
+        except Exception as e:
+            print(f"Error in create_task: {e}")
+            raise
+
+    @async_method
+    async def update_task(self, task_id: UUID, update: TaskUpdate) -> bool:
         """Update a task"""
-        response = self.session.put(f"{self.base_url}/tasks/{task_id}", json=task_data)
-        response.raise_for_status()
-        return Task.model_validate(response.json())
+        try:
+            response = await self.client.put(
+                f"/tasks/{task_id}",
+                json=update.model_dump(exclude_unset=True)
+            )
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"Error in update_task: {e}")
+            raise
 
-    def cancel_task(self, task_id: UUID) -> Dict[str, str]:
-        """Cancel a task"""
-        response = self.session.post(f"{self.base_url}/tasks/{task_id}/cancel")
-        response.raise_for_status()
-        return response.json()
+    @async_method
+    async def lock_task(self, task_id: UUID, worker_id: str) -> bool:
+        """Lock a task for processing"""
+        try:
+            response = await self.client.post(
+                f"/tasks/{task_id}/lock",
+                json={"worker_id": worker_id}
+            )
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"Error in lock_task: {e}")
+            raise
 
-    def pause_task(self, task_id: UUID) -> Dict[str, str]:
-        """Pause a running task"""
-        response = self.session.post(f"{self.base_url}/tasks/{task_id}/pause")
-        response.raise_for_status()
-        return response.json()
+    @async_method
+    async def unlock_task(self, task_id: UUID) -> bool:
+        """Unlock a task"""
+        try:
+            response = await self.client.post(f"/tasks/{task_id}/unlock")
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            print(f"Error in unlock_task: {e}")
+            raise
 
-    def resume_task(self, task_id: UUID) -> Dict[str, str]:
-        """Resume a paused task"""
-        response = self.session.post(f"{self.base_url}/tasks/{task_id}/resume")
-        response.raise_for_status()
-        return response.json()
-
-    def retry_task(self, task_id: UUID) -> Dict[str, str]:
-        """Retry a failed task"""
-        response = self.session.post(f"{self.base_url}/tasks/{task_id}/retry")
-        response.raise_for_status()
-        return response.json()
-
-    def get_task_logs(
-        self,
-        task_id: UUID,
-        skip: int = 0,
-        limit: int = 100
-    ) -> List[Dict[str, Any]]:
-        """Get logs for a specific task"""
-        response = self.session.get(
-            f"{self.base_url}/tasks/{task_id}/logs",
-            params={"skip": skip, "limit": limit}
-        )
-        response.raise_for_status()
-        return response.json()
+    async def close(self):
+        """Close the async client"""
+        if self.client:
+            await self.client.aclose()
+            self.client = None

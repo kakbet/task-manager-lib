@@ -6,11 +6,11 @@ setup(
     packages=find_packages(),
     install_requires=[
         "pydantic>=2.0.0",
-        "python-dateutil>=2.8.2"
+        "httpx>=0.24.0"
     ],
     author="Your Name",
     author_email="your.email@example.com",
-    description="Shared library for Task Manager components",
+    description="Shared library for Task Manager",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     classifiers=[
