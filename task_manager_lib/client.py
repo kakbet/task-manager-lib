@@ -3,7 +3,6 @@ from typing import List, Optional, Dict, Any
 from uuid import UUID
 from datetime import datetime
 from pydantic import BaseModel
-import asyncio
 from functools import wraps
 
 def async_method(func):
