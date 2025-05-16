@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 class TaskBase(BaseModel):
     name: str
+    type: str  # Task tipi (örn: addition_task, multiplication_task)
     description: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
     scheduled_time: Optional[datetime] = None
@@ -27,6 +28,7 @@ class TaskUpdate(BaseModel):
 
 class Task(TaskBase):
     id: UUID
+    type: str  # Task tipi (örn: addition_task, multiplication_task)
     status: str
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
