@@ -89,6 +89,12 @@ class TaskWorker:
                     # Get next task
                     task = await self.get_next_task()
                     if task:
+                        # Check if we have a handler for this task type
+                        if task.type not in self.handlers:
+                            logger.info(f"Skipping task {task.id} - no handler for type: {task.type}")
+                            await asyncio.sleep(self.poll_interval)
+                            continue
+                            
                         # Try to acquire lock
                         if await self.lock_task(task.id):
                             logger.info(f"Starting task {task.id}")
