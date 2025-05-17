@@ -5,6 +5,7 @@ import asyncio
 import logging
 import uuid
 from typing import Dict, Optional, Callable, Awaitable, Any
+import httpx
 
 from .client import TaskManagerClient
 from .models import Task
@@ -17,7 +18,10 @@ class TaskWorker:
         max_concurrent_tasks: int = 10,
         poll_interval: float = 1.0,
         client: Optional[TaskManagerClient] = None,
-        worker_id: Optional[str] = None
+        worker_id: Optional[str] = None,
+        api_url: str = "http://localhost:8000",
+        heartbeat_interval: int = 30,  # saniye
+        lock_timeout: int = 1800,  # 30 dakika
     ):
         self.max_concurrent_tasks = max_concurrent_tasks
         self.poll_interval = poll_interval
@@ -25,6 +29,12 @@ class TaskWorker:
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.handlers: Dict[str, Callable[[Task], Awaitable[Any]]] = {}
         self.worker_id = worker_id or f"worker_{uuid.uuid4().hex[:8]}"
+        self.api_url = api_url
+        self.heartbeat_interval = heartbeat_interval
+        self.lock_timeout = lock_timeout
+        self._current_task_id: Optional[str] = None
+        self._heartbeat_task: Optional[asyncio.Task] = None
+        self._stop_heartbeat = asyncio.Event()
 
     def register_handler(self, task_type: str, handler: Callable[[Task], Awaitable[Any]]) -> None:
         """Register a handler for a specific task type"""
@@ -48,9 +58,52 @@ class TaskWorker:
             logger.error(f"Error locking task {task_id}: {e}")
             return False
 
+    async def _send_heartbeat(self):
+        """Periyodik olarak heartbeat gönder"""
+        if not self._current_task_id:
+            return
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/api/v1/tasks/{self._current_task_id}/heartbeat",
+                    json={"worker_id": self.worker_id}
+                )
+                response.raise_for_status()
+                logger.debug(f"Heartbeat sent for task {self._current_task_id}")
+        except Exception as e:
+            logger.error(f"Error sending heartbeat: {str(e)}")
+
+    async def _run_heartbeat(self):
+        """Heartbeat loop'unu çalıştır"""
+        while not self._stop_heartbeat.is_set():
+            await self._send_heartbeat()
+            try:
+                await asyncio.wait_for(
+                    self._stop_heartbeat.wait(),
+                    timeout=self.heartbeat_interval
+                )
+            except asyncio.TimeoutError:
+                continue
+
     async def process_task(self, task: Task) -> None:
         """Process a single task"""
+        self._current_task_id = task.id
+        
+        # Heartbeat task'ını başlat
+        self._stop_heartbeat.clear()
+        self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
+
         try:
+            # Task'ı kilitle
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.api_url}/api/v1/tasks/{task.id}/lock",
+                    json={"worker_id": self.worker_id}
+                )
+                response.raise_for_status()
+
+            # Task'ı işle
             handler = self.handlers.get(task.type)
             if not handler:
                 logger.error(f"No handler registered for task type: {task.type}")
@@ -69,10 +122,21 @@ class TaskWorker:
         except Exception as e:
             logger.error(f"Error in process_task for {task.id}: {e}")
         finally:
+            # Heartbeat'i durdur
+            self._stop_heartbeat.set()
+            if self._heartbeat_task:
+                await self._heartbeat_task
+            self._current_task_id = None
+
+            # Task'ı unlock et
             try:
-                await self.client.unlock_task(task.id)
+                async with httpx.AsyncClient() as client:
+                    await client.post(
+                        f"{self.api_url}/api/v1/tasks/{task.id}/unlock",
+                        json={"worker_id": self.worker_id}
+                    )
             except Exception as e:
-                logger.error(f"Error unlocking task {task.id}: {e}")
+                logger.error(f"Error unlocking task {task.id}: {str(e)}")
 
     async def start(self) -> None:
         """Start the worker loop"""
