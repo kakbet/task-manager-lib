@@ -66,7 +66,7 @@ class TaskWorker:
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{self.api_url}/api/v1/tasks/{self._current_task_id}/heartbeat",
+                    f"{self.api_url}/tasks/{self._current_task_id}/heartbeat",
                     json={"worker_id": self.worker_id}
                 )
                 response.raise_for_status()
@@ -98,7 +98,7 @@ class TaskWorker:
             # Task'ı kilitle
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    f"{self.api_url}/api/v1/tasks/{task.id}/lock",
+                    f"{self.api_url}/tasks/{task.id}/lock",
                     json={"worker_id": self.worker_id}
                 )
                 response.raise_for_status()
@@ -132,7 +132,7 @@ class TaskWorker:
             try:
                 async with httpx.AsyncClient() as client:
                     await client.post(
-                        f"{self.api_url}/api/v1/tasks/{task.id}/unlock",
+                        f"{self.api_url}/tasks/{task.id}/unlock",
                         json={"worker_id": self.worker_id}
                     )
             except Exception as e:
