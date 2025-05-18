@@ -6,6 +6,7 @@ import logging
 import uuid
 from typing import Dict, Optional, Callable, Awaitable, Any
 import httpx
+from datetime import datetime, timedelta
 
 from .client import TaskManagerClient
 from .models import Task
@@ -24,10 +25,14 @@ class TaskWorker:
         api_url: str = "http://localhost:8000",
         heartbeat_interval: int = 30,  # saniye
         lock_timeout: int = 1800,  # 30 dakika
+        connection_retry_interval: int = 5,  # saniye
+        max_connection_retries: int = 3
     ):
         self.max_concurrent_tasks = max_concurrent_tasks
         self.poll_interval = poll_interval
         self.worker_id = worker_id or f"worker_{uuid.uuid4().hex[:8]}"
+        self.connection_retry_interval = connection_retry_interval
+        self.max_connection_retries = max_connection_retries
         
         # Client'ı oluştur ve worker ID'yi ayarla
         self.client = client or TaskManagerClient(api_url)
@@ -40,6 +45,8 @@ class TaskWorker:
         self._current_task_id: Optional[str] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
         self._stop_heartbeat = asyncio.Event()
+        self._last_connection_error = None
+        self._connection_error_count = 0
 
     def register_handler(self, task_type: str, handler: Callable[[Task], Awaitable[Any]]) -> None:
         """Register a handler for a specific task type"""
@@ -50,9 +57,20 @@ class TaskWorker:
         """Get next available task from the task manager"""
         try:
             tasks = await self.client.list_tasks(status="queued", limit=1)
+            self._last_connection_error = None
+            self._connection_error_count = 0
             return tasks[0] if tasks else None
         except Exception as e:
-            logger.error(f"Error getting next task: {e}")
+            self._last_connection_error = e
+            self._connection_error_count += 1
+            
+            if self._connection_error_count >= self.max_connection_retries:
+                logger.error(f"Failed to connect to task manager after {self._connection_error_count} attempts: {e}")
+                await asyncio.sleep(self.connection_retry_interval * 2)  # Daha uzun bekle
+            else:
+                logger.warning(f"Error getting next task (attempt {self._connection_error_count}): {e}")
+                await asyncio.sleep(self.connection_retry_interval)
+            
             return None
 
     async def lock_task(self, task_id: str) -> bool:
@@ -61,10 +79,14 @@ class TaskWorker:
             success = await self.client.lock_task(task_id)
             if success:
                 logger.debug(f"Successfully locked task {task_id}")
+                self._last_connection_error = None
+                self._connection_error_count = 0
             else:
                 logger.warning(f"Failed to lock task {task_id}")
             return success
         except Exception as e:
+            self._last_connection_error = e
+            self._connection_error_count += 1
             logger.error(f"Error locking task {task_id}: {e}")
             return False
 
@@ -77,9 +99,13 @@ class TaskWorker:
             success = await self.client.send_heartbeat(self._current_task_id)
             if success:
                 logger.debug(f"Heartbeat sent for task {self._current_task_id}")
+                self._last_connection_error = None
+                self._connection_error_count = 0
             else:
                 logger.warning(f"Failed to send heartbeat for task {self._current_task_id}")
         except Exception as e:
+            self._last_connection_error = e
+            self._connection_error_count += 1
             logger.error(f"Error sending heartbeat: {str(e)}")
 
     async def _run_heartbeat(self):
