@@ -20,6 +20,7 @@ class TaskManagerClient:
                 "X-API-Key": api_key or ""
             }
         )
+        self.worker_id = "default_worker"
     
     async def _handle_response(self, response: httpx.Response) -> Any:
         """Handle API response and errors"""
@@ -102,28 +103,47 @@ class TaskManagerClient:
             logger.error(f"Error in update_task: {e}")
             return None
 
-    async def lock_task(self, task_id: str, worker_id: str = "default_worker") -> bool:
+    def set_worker_id(self, worker_id: str):
+        """Set worker ID for this client"""
+        self.worker_id = worker_id
+
+    async def lock_task(self, task_id: str, worker_id: Optional[str] = None) -> bool:
         """Lock a task for processing"""
         try:
             response = await self.client.post(
                 f"/tasks/{task_id}/lock",
-                json={"worker_id": worker_id}
+                json={"worker_id": worker_id or self.worker_id}
             )
             data = await self._handle_response(response)
-            # API returns {"message": "Task locked successfully"} on success
             return "Task locked successfully" in data.get("message", "")
         except Exception as e:
             logger.error(f"Error in lock_task: {e}")
             return False
 
-    async def unlock_task(self, task_id: str) -> bool:
+    async def unlock_task(self, task_id: str, worker_id: Optional[str] = None) -> bool:
         """Unlock a task"""
         try:
-            response = await self.client.post(f"/tasks/{task_id}/unlock")
+            response = await self.client.post(
+                f"/tasks/{task_id}/unlock",
+                json={"worker_id": worker_id or self.worker_id}
+            )
             data = await self._handle_response(response)
-            return data.get("unlocked", False)
+            return "Task unlocked successfully" in data.get("message", "")
         except Exception as e:
             logger.error(f"Error in unlock_task: {e}")
+            return False
+
+    async def send_heartbeat(self, task_id: str, worker_id: Optional[str] = None) -> bool:
+        """Send heartbeat for a locked task"""
+        try:
+            response = await self.client.post(
+                f"/tasks/{task_id}/heartbeat",
+                json={"worker_id": worker_id or self.worker_id}
+            )
+            data = await self._handle_response(response)
+            return "Heartbeat updated successfully" in data.get("message", "")
+        except Exception as e:
+            logger.error(f"Error in send_heartbeat: {e}")
             return False
 
     async def close(self):
