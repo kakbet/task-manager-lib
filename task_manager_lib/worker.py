@@ -47,19 +47,33 @@ class TaskWorker:
         self._stop_heartbeat = asyncio.Event()
         self._last_connection_error = None
         self._connection_error_count = 0
-
-    def register_handler(self, task_type: str, handler: Callable[[Task], Awaitable[Any]]) -> None:
-        """Register a handler for a specific task type"""
-        self.handlers[task_type] = handler
-        logger.info(f"Registered handler for task type: {task_type}")
+        self._last_task_check = None
+        self._no_task_count = 0
 
     async def get_next_task(self) -> Optional[Task]:
         """Get next available task from the task manager"""
         try:
+            current_time = datetime.utcnow()
+            
+            # Log if we haven't seen a task in a while
+            if self._last_task_check:
+                time_since_last_check = (current_time - self._last_task_check).total_seconds()
+                if time_since_last_check > 60:  # 1 dakikadan uzun süredir task yok
+                    logger.warning(f"No tasks found for {time_since_last_check:.0f} seconds")
+                    self._no_task_count += 1
+                    if self._no_task_count % 5 == 0:  # Her 5 uyarıda bir detaylı log
+                        logger.info(f"Worker state: Active tasks: {len(self.active_tasks)}, Handlers: {list(self.handlers.keys())}")
+            
             tasks = await self.client.list_tasks(status="queued", limit=1)
-            self._last_connection_error = None
-            self._connection_error_count = 0
-            return tasks[0] if tasks else None
+            self._last_task_check = current_time
+            
+            if tasks:
+                self._no_task_count = 0
+                logger.debug(f"Found queued task: {tasks[0].id} of type {tasks[0].type}")
+                return tasks[0]
+            
+            return None
+            
         except Exception as e:
             self._last_connection_error = e
             self._connection_error_count += 1
@@ -72,6 +86,11 @@ class TaskWorker:
                 await asyncio.sleep(self.connection_retry_interval)
             
             return None
+
+    def register_handler(self, task_type: str, handler: Callable[[Task], Awaitable[Any]]) -> None:
+        """Register a handler for a specific task type"""
+        self.handlers[task_type] = handler
+        logger.info(f"Registered handler for task type: {task_type}")
 
     async def lock_task(self, task_id: str) -> bool:
         """Try to acquire lock for a task"""
