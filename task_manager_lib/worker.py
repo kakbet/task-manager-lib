@@ -25,11 +25,14 @@ class TaskWorker:
     ):
         self.max_concurrent_tasks = max_concurrent_tasks
         self.poll_interval = poll_interval
-        self.client = client or TaskManagerClient()
+        self.worker_id = worker_id or f"worker_{uuid.uuid4().hex[:8]}"
+        
+        # Client'ı oluştur ve worker ID'yi ayarla
+        self.client = client or TaskManagerClient(api_url)
+        self.client.set_worker_id(self.worker_id)
+        
         self.active_tasks: Dict[str, asyncio.Task] = {}
         self.handlers: Dict[str, Callable[[Task], Awaitable[Any]]] = {}
-        self.worker_id = worker_id or f"worker_{uuid.uuid4().hex[:8]}"
-        self.api_url = api_url
         self.heartbeat_interval = heartbeat_interval
         self.lock_timeout = lock_timeout
         self._current_task_id: Optional[str] = None
@@ -53,7 +56,12 @@ class TaskWorker:
     async def lock_task(self, task_id: str) -> bool:
         """Try to acquire lock for a task"""
         try:
-            return await self.client.lock_task(task_id, worker_id=self.worker_id)
+            success = await self.client.lock_task(task_id)
+            if success:
+                logger.debug(f"Successfully locked task {task_id}")
+            else:
+                logger.warning(f"Failed to lock task {task_id}")
+            return success
         except Exception as e:
             logger.error(f"Error locking task {task_id}: {e}")
             return False
@@ -64,13 +72,11 @@ class TaskWorker:
             return
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.api_url}/tasks/{self._current_task_id}/heartbeat",
-                    json={"worker_id": self.worker_id}
-                )
-                response.raise_for_status()
+            success = await self.client.send_heartbeat(self._current_task_id)
+            if success:
                 logger.debug(f"Heartbeat sent for task {self._current_task_id}")
+            else:
+                logger.warning(f"Failed to send heartbeat for task {self._current_task_id}")
         except Exception as e:
             logger.error(f"Error sending heartbeat: {str(e)}")
 
@@ -95,29 +101,22 @@ class TaskWorker:
         self._heartbeat_task = asyncio.create_task(self._run_heartbeat())
 
         try:
-            # Task'ı kilitle
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.api_url}/tasks/{task.id}/lock",
-                    json={"worker_id": self.worker_id}
-                )
-                response.raise_for_status()
-
-            # Task'ı işle
+            # Task handler'ı kontrol et
             handler = self.handlers.get(task.type)
             if not handler:
                 logger.error(f"No handler registered for task type: {task.type}")
                 await self.client.update_task(task.id, status="failed", error="No handler registered")
                 return
 
-            await self.client.update_task(task.id, status="running")
-            
+            # Task'ı işle
             try:
                 result = await handler(task)
                 await self.client.update_task(task.id, status="completed", result=result)
+                logger.info(f"Task {task.id} completed successfully")
             except Exception as e:
-                logger.error(f"Error processing task {task.id}: {e}")
-                await self.client.update_task(task.id, status="failed", error=str(e))
+                error_msg = f"Error processing task: {str(e)}"
+                logger.error(f"Task {task.id} failed: {error_msg}")
+                await self.client.update_task(task.id, status="failed", error=error_msg)
                 
         except Exception as e:
             logger.error(f"Error in process_task for {task.id}: {e}")
@@ -130,17 +129,17 @@ class TaskWorker:
 
             # Task'ı unlock et
             try:
-                async with httpx.AsyncClient() as client:
-                    await client.post(
-                        f"{self.api_url}/tasks/{task.id}/unlock",
-                        json={"worker_id": self.worker_id}
-                    )
+                success = await self.client.unlock_task(task.id)
+                if success:
+                    logger.debug(f"Successfully unlocked task {task.id}")
+                else:
+                    logger.warning(f"Failed to unlock task {task.id}")
             except Exception as e:
                 logger.error(f"Error unlocking task {task.id}: {str(e)}")
 
     async def start(self) -> None:
         """Start the worker loop"""
-        logger.info("Starting worker...")
+        logger.info(f"Starting worker {self.worker_id}...")
         
         try:
             while True:
@@ -152,35 +151,39 @@ class TaskWorker:
                     
                     # Get next task
                     task = await self.get_next_task()
-                    if task:
-                        # Check if we have a handler for this task type
-                        if task.type not in self.handlers:
-                            logger.info(f"Skipping task {task.id} - no handler for type: {task.type}")
-                            await asyncio.sleep(self.poll_interval)
-                            continue
-                            
-                        # Try to acquire lock
-                        if await self.lock_task(task.id):
-                            logger.info(f"Starting task {task.id}")
-                            # Create task
-                            task_obj = asyncio.create_task(self.process_task(task))
-                            self.active_tasks[task.id] = task_obj
-                        else:
-                            logger.warning(f"Could not acquire lock for task {task.id}")
-                    else:
+                    if not task:
                         await asyncio.sleep(self.poll_interval)
+                        continue
+
+                    # Check if we have a handler for this task type
+                    if task.type not in self.handlers:
+                        logger.info(f"Skipping task {task.id} - no handler for type: {task.type}")
+                        await asyncio.sleep(self.poll_interval)
+                        continue
+                        
+                    # Try to acquire lock
+                    if await self.lock_task(task.id):
+                        logger.info(f"Starting task {task.id} of type {task.type}")
+                        # Create task
+                        task_obj = asyncio.create_task(self.process_task(task))
+                        self.active_tasks[task.id] = task_obj
+                    else:
+                        logger.warning(f"Could not acquire lock for task {task.id}")
                     
                     # Clean up completed tasks
                     done_tasks = []
                     for task_id, task_obj in self.active_tasks.items():
                         if task_obj.done():
                             done_tasks.append(task_id)
+                            # Check for exceptions
+                            if task_obj.exception():
+                                logger.error(f"Task {task_id} failed with error: {task_obj.exception()}")
                     
                     for task_id in done_tasks:
                         del self.active_tasks[task_id]
                     
                 except Exception as e:
-                    logger.error(f"Error in worker loop: {e}")
+                    logger.error(f"Error in worker loop: {str(e)}")
                     await asyncio.sleep(self.poll_interval)
         finally:
             # Clean up on exit
