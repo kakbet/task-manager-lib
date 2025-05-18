@@ -2,6 +2,7 @@
 Task Manager API Client
 """
 import logging
+import traceback
 from typing import Dict, List, Optional, Any, Union
 import httpx
 from .models import Task, TaskCreate, TaskUpdate
@@ -18,7 +19,8 @@ class TaskManagerClient:
             headers={
                 "Content-Type": "application/json",
                 "X-API-Key": api_key or ""
-            }
+            },
+            timeout=30.0  # 30 saniye timeout
         )
         self.worker_id = "default_worker"
     
@@ -28,10 +30,11 @@ class TaskManagerClient:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error: {e.response.status_code} - {e.response.text}")
+            error_detail = f"HTTP {e.response.status_code}: {e.response.text}"
+            logger.error(f"HTTP error in request to {e.request.url}: {error_detail}")
             raise
         except Exception as e:
-            logger.error(f"Error processing response: {e}")
+            logger.error(f"Error processing response: {str(e)}\n{traceback.format_exc()}")
             raise
 
     async def list_tasks(
@@ -56,7 +59,7 @@ class TaskManagerClient:
                 
             return [Task.model_validate(task) for task in data]
         except Exception as e:
-            logger.error(f"Error in list_tasks: {e}")
+            logger.error(f"Error in list_tasks: {str(e)}\n{traceback.format_exc()}")
             return []
 
     async def get_task(self, task_id: str) -> Optional[Task]:
@@ -66,7 +69,7 @@ class TaskManagerClient:
             data = await self._handle_response(response)
             return Task.model_validate(data)
         except Exception as e:
-            logger.error(f"Error in get_task: {e}")
+            logger.error(f"Error in get_task: {str(e)}\n{traceback.format_exc()}")
             return None
 
     async def create_task(self, task: TaskCreate) -> Optional[Task]:
@@ -76,7 +79,7 @@ class TaskManagerClient:
             data = await self._handle_response(response)
             return Task.model_validate(data)
         except Exception as e:
-            logger.error(f"Error in create_task: {e}")
+            logger.error(f"Error in create_task: {str(e)}\n{traceback.format_exc()}")
             return None
 
     async def update_task(
@@ -100,7 +103,7 @@ class TaskManagerClient:
             data = await self._handle_response(response)
             return Task.model_validate(data)
         except Exception as e:
-            logger.error(f"Error in update_task: {e}")
+            logger.error(f"Error in update_task: {str(e)}\n{traceback.format_exc()}")
             return None
 
     def set_worker_id(self, worker_id: str):
@@ -110,14 +113,25 @@ class TaskManagerClient:
     async def lock_task(self, task_id: str, worker_id: Optional[str] = None) -> bool:
         """Lock a task for processing"""
         try:
+            worker = worker_id or self.worker_id
+            logger.debug(f"Attempting to lock task {task_id} with worker {worker}")
+            
             response = await self.client.post(
                 f"/tasks/{task_id}/lock",
-                json={"worker_id": worker_id or self.worker_id}
+                json={"worker_id": worker}
             )
+            
             data = await self._handle_response(response)
-            return "Task locked successfully" in data.get("message", "")
+            success = "Task locked successfully" in data.get("message", "")
+            
+            if success:
+                logger.debug(f"Successfully locked task {task_id}")
+            else:
+                logger.warning(f"Failed to lock task {task_id}: {data.get('message', 'Unknown error')}")
+            
+            return success
         except Exception as e:
-            logger.error(f"Error in lock_task: {e}")
+            logger.error(f"Error in lock_task for task {task_id}: {str(e)}\n{traceback.format_exc()}")
             return False
 
     async def unlock_task(self, task_id: str, worker_id: Optional[str] = None) -> bool:
@@ -130,7 +144,7 @@ class TaskManagerClient:
             data = await self._handle_response(response)
             return "Task unlocked successfully" in data.get("message", "")
         except Exception as e:
-            logger.error(f"Error in unlock_task: {e}")
+            logger.error(f"Error in unlock_task: {str(e)}\n{traceback.format_exc()}")
             return False
 
     async def send_heartbeat(self, task_id: str, worker_id: Optional[str] = None) -> bool:
@@ -143,7 +157,7 @@ class TaskManagerClient:
             data = await self._handle_response(response)
             return "Heartbeat updated successfully" in data.get("message", "")
         except Exception as e:
-            logger.error(f"Error in send_heartbeat: {e}")
+            logger.error(f"Error in send_heartbeat: {str(e)}\n{traceback.format_exc()}")
             return False
 
     async def close(self):
