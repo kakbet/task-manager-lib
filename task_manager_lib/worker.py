@@ -10,13 +10,15 @@ import httpx
 from .client import TaskManagerClient
 from .models import Task
 
+# Log seviyesini DEBUG'a çek
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 class TaskWorker:
     def __init__(
         self,
         max_concurrent_tasks: int = 10,
-        poll_interval: float = 1.0,
+        poll_interval: float = 0.5,  # 0.5 saniyeye düşürdük
         client: Optional[TaskManagerClient] = None,
         worker_id: Optional[str] = None,
         api_url: str = "http://localhost:8000",
