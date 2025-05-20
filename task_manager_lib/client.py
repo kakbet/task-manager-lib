@@ -36,10 +36,9 @@ class TaskManagerClient:
         current_time = datetime.utcnow()
         
         try:
-            response = await self.client.request(method, url, **kwargs)
-            
             # Log request details at DEBUG level
             logger.debug(f"API Request: {method} {url}")
+            response = await self.client.request(method, url, **kwargs)
             logger.debug(f"Request body: {kwargs.get('json')}")
             
             # Reset error counter on successful request
