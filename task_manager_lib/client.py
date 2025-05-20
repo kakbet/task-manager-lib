@@ -38,14 +38,14 @@ class TaskManagerClient:
         try:
             # Log request details at DEBUG level
             logger.debug(f"API Request: {method} {url}")
-            response = await self.client.request(method, url, **kwargs)
             logger.debug(f"Request body: {kwargs.get('json')}")
+            response = await self.client.request(method, url, **kwargs)
+        
             
             # Reset error counter on successful request
             if response.status_code < 400:
                 self._error_count = 0
                 self._last_error_time = None
-                
             try:
                 response.raise_for_status()
             except httpx.HTTPStatusError as e:

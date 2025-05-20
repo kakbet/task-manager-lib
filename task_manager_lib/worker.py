@@ -22,7 +22,7 @@ class TaskWorker:
         poll_interval: float = 0.5,  # 0.5 saniyeye düşürdük
         client: Optional[TaskManagerClient] = None,
         worker_id: Optional[str] = None,
-        api_url: str = "http://localhost:8000",
+        api_url: str = "http://localhost:8001",  # Updated port to match running server
         heartbeat_interval: int = 30,  # saniye
         lock_timeout: int = 1800,  # 30 dakika
         connection_retry_interval: int = 5,  # saniye
