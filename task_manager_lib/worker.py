@@ -4,6 +4,7 @@ Task worker implementation for handling task execution
 import asyncio
 import logging
 import uuid
+import traceback
 from typing import Dict, Optional, Callable, Awaitable, Any
 import httpx
 from datetime import datetime, timedelta
@@ -13,7 +14,7 @@ from .models import Task
 
 # Log seviyesini DEBUG'a çek
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 class TaskWorker:
     def __init__(
@@ -22,7 +23,7 @@ class TaskWorker:
         poll_interval: float = 0.5,  # 0.5 saniyeye düşürdük
         client: Optional[TaskManagerClient] = None,
         worker_id: Optional[str] = None,
-        api_url: str = "http://localhost:8001",  # Updated port to match running server
+        api_url: str = "http://127.0.0.1:8001",  # Using IP address instead of localhost
         heartbeat_interval: int = 30,  # saniye
         lock_timeout: int = 1800,  # 30 dakika
         connection_retry_interval: int = 5,  # saniye

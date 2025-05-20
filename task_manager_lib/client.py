@@ -1,6 +1,7 @@
 """TaskManager API client implementation"""
 import logging
 import json
+import traceback
 from typing import List, Optional, Dict, Any
 import httpx
 from datetime import datetime
@@ -8,7 +9,7 @@ from datetime import datetime
 from .models import Task, TaskCreate, TaskUpdate
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 class TaskManagerAPIError(Exception):
     """Base exception for API errors"""
