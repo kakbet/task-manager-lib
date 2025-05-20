@@ -8,6 +8,7 @@ from datetime import datetime
 from .models import Task, TaskCreate, TaskUpdate
 
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 class TaskManagerAPIError(Exception):
     """Base exception for API errors"""
